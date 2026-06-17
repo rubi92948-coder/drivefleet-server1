@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import "dotenv/config";
+import bcrypt from "bcryptjs";
 import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
 
 const app = express();
@@ -17,11 +18,15 @@ const client = new MongoClient(process.env.MONGO_URI, {
 });
 
 let db;
+let usersCollection;
 
 async function connectDB() {
   try {
     await client.connect();
     db = client.db("driveFleetDB");
+
+    usersCollection = db.collection("users");
+
     console.log("Connected to MongoDB ✅");
   } catch (err) {
     console.error("DB ERROR:", err);
@@ -30,7 +35,84 @@ async function connectDB() {
 
 connectDB();
 
-// ================= GET ALL =================
+
+// ================= AUTH ROUTES =================
+
+// 🔐 SIGNUP
+app.post("/api/auth/signup", async (req, res) => {
+  try {
+    const { name, email, password, image } = req.body;
+
+    if (!name || !email || !password) {
+      return res.status(400).json({ message: "All fields required" });
+    }
+
+    const exist = await usersCollection.findOne({ email });
+
+    if (exist) {
+      return res.status(400).json({ message: "User already exists" });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const newUser = {
+      name,
+      email,
+      image: image || "",
+      password: hashedPassword,
+      createdAt: new Date(),
+    };
+
+    await usersCollection.insertOne(newUser);
+
+    res.status(201).json({
+      message: "Signup successful ✨",
+    });
+
+  } catch (err) {
+    console.error("SIGNUP ERROR:", err);
+    res.status(500).json({ message: "Signup failed" });
+  }
+});
+
+
+// 🔐 LOGIN
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    const user = await usersCollection.findOne({ email });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password);
+
+    if (!isMatch) {
+      return res.status(400).json({ message: "Wrong password" });
+    }
+
+    res.json({
+      message: "Login successful ✨",
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        image: user.image,
+      },
+    });
+
+  } catch (err) {
+    console.error("LOGIN ERROR:", err);
+    res.status(500).json({ message: "Login failed" });
+  }
+});
+
+
+// ================= CARS =================
+
+// GET ALL
 app.get("/api/cars", async (req, res) => {
   try {
     const cars = await db.collection("cars").find().toArray();
@@ -40,7 +122,8 @@ app.get("/api/cars", async (req, res) => {
   }
 });
 
-// ================= GET ONE =================
+
+// GET ONE
 app.get("/api/cars/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -63,25 +146,29 @@ app.get("/api/cars/:id", async (req, res) => {
   }
 });
 
-// ================= ADD =================
+
+// ADD CAR
 app.post("/api/cars", async (req, res) => {
   try {
+    const body = req.body;
+
     const newCar = {
-      name: req.body.name,
-      price: Number(req.body.price),
-      type: req.body.type,
-      image: req.body.image,
-      seats: Number(req.body.seats),
-      location: req.body.location,
-      date: req.body.date,
-      availability: req.body.availability === true || req.body.availability === "true",
-      description: req.body.description,
+      name: body.name,
+      price: Number(body.price),
+      type: body.type,
+      image: body.image,
+      seats: Number(body.seats),
+      location: body.location,
+      date: body.date,
+      availability:
+        body.availability === true || body.availability === "true",
+      description: body.description,
     };
 
     const result = await db.collection("cars").insertOne(newCar);
 
     res.status(201).json({
-      message: "Car added successfully",
+      message: "Car added successfully 🚗",
       insertedId: result.insertedId,
     });
   } catch (err) {
@@ -89,7 +176,8 @@ app.post("/api/cars", async (req, res) => {
   }
 });
 
-// ================= UPDATE (FINAL FIX) =================
+
+// UPDATE CAR
 app.put("/api/cars/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -98,39 +186,32 @@ app.put("/api/cars/:id", async (req, res) => {
       return res.status(400).json({ message: "Invalid ID" });
     }
 
-    // ❌ NEVER allow _id update
-    const { _id, ...rest } = req.body;
+    const { _id, ...body } = req.body;
 
-    const updateData = {
-      name: rest.name,
-      price: rest.price ? Number(rest.price) : undefined,
-      type: rest.type,
-      image: rest.image,
-      seats: rest.seats ? Number(rest.seats) : undefined,
-      location: rest.location,
-      date: rest.date,
-      availability:
-        rest.availability === true || rest.availability === "true",
-      description: rest.description,
-    };
+    const updateData = {};
 
-    // remove undefined fields
-    Object.keys(updateData).forEach(
-      (key) => updateData[key] === undefined && delete updateData[key]
-    );
+    if (body.name) updateData.name = body.name;
+    if (body.price !== undefined) updateData.price = Number(body.price);
+    if (body.type) updateData.type = body.type;
+    if (body.image) updateData.image = body.image;
+    if (body.seats !== undefined) updateData.seats = Number(body.seats);
+    if (body.location) updateData.location = body.location;
+    if (body.date) updateData.date = body.date;
+    if (body.description) updateData.description = body.description;
 
-    const result = await db.collection("cars").updateOne(
+    if (body.availability !== undefined) {
+      updateData.availability =
+        body.availability === true || body.availability === "true";
+    }
+
+    await db.collection("cars").updateOne(
       { _id: new ObjectId(id) },
       { $set: updateData }
     );
 
-    if (result.matchedCount === 0) {
-      return res.status(404).json({ message: "Car not found" });
-    }
-
     res.json({ message: "Updated successfully ✨" });
+
   } catch (err) {
-    console.log("UPDATE ERROR:", err);
     res.status(500).json({
       message: "Update failed",
       error: err.message,
@@ -138,7 +219,8 @@ app.put("/api/cars/:id", async (req, res) => {
   }
 });
 
-// ================= DELETE =================
+
+// DELETE CAR
 app.delete("/api/cars/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -147,19 +229,17 @@ app.delete("/api/cars/:id", async (req, res) => {
       return res.status(400).json({ message: "Invalid ID" });
     }
 
-    const result = await db.collection("cars").deleteOne({
+    await db.collection("cars").deleteOne({
       _id: new ObjectId(id),
     });
 
-    if (result.deletedCount === 0) {
-      return res.status(404).json({ message: "Car not found" });
-    }
-
     res.json({ message: "Deleted successfully 🗑" });
+
   } catch (err) {
     res.status(500).json({ message: "Delete failed" });
   }
 });
+
 
 // ================= SERVER =================
 const PORT = process.env.PORT || 5000;
